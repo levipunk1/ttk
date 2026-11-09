@@ -49,6 +49,7 @@ async function conectar(alvo) {
   // ---- PRESENTES ----
   // Presente em sequencia (combo) manda varios eventos e um final (repeatEnd). Se o final nunca chega
   // (acontece), o presente era perdido. Agora: guardamos o combo e, se o final nao vier em 6s, enviamos mesmo assim.
+  const vistos = new Set();
   const combos = new Map();
   const jaEnviado = new Map(); // chave -> quantidade ja enviada (evita contar duas vezes se o final chegar atrasado)
   const positivo = (...v) => { for (const x of v) { const n = Number(x); if (Number.isFinite(n) && n > 0) return n; } return 0; };
@@ -62,6 +63,13 @@ async function conectar(alvo) {
   };
   c.on('gift', (d) => {
     if (conexao !== c) return; // ignora conexao antiga/duplicada
+    // o TikTok pode entregar a mesma mensagem mais de uma vez: ignora se o id ja foi visto
+    const mid = String(pick(d.msgId, d.common && d.common.msgId, ''));
+    if (mid) {
+      if (vistos.has(mid)) { console.log('[presente] REPETIDO (ignorado) msgId=' + mid); return; }
+      vistos.add(mid);
+      if (vistos.size > 2000) vistos.delete(vistos.values().next().value);
+    }
     const det = d.giftDetails || d.gift || {};
     const ext = d.extendedGiftInfo || {};
     const user = quem(d);
@@ -70,7 +78,7 @@ async function conectar(alvo) {
     const unidade = positivo(d.diamondCount, det.diamondCount, ext.diamond_count, ext.diamondCount);
     const qtd = Math.max(1, Math.floor(positivo(d.repeatCount, 1)));
     const fim = d.repeatEnd === true || Number(d.repeatEnd) === 1;
-    console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd + ' | groupId=' + d.groupId);
+    console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd + ' | groupId=' + d.groupId + ' | msgId=' + mid);
     if (!unidade) { console.log('[presente] IGNORADO (sem valor em moedas). Dados brutos: ' + JSON.stringify(d).slice(0, 800)); return; }
 
     if (tipo !== 1) { enviar({ user, nome, unidade, qtd }); return; } // presente unico: conta na hora
