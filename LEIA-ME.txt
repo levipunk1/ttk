@@ -1,0 +1,13 @@
+1. Instale o Node.js (nodejs.org), abra o terminal nesta pasta:
+     npm install
+     node server.js
+2. Painel: http://localhost:3000/?key=minha-chave-123
+   (troque a chave: CHAVE=outra node server.js)
+3. Exponha pro Roblox (precisa de URL publica https):
+     cloudflared tunnel --url http://localhost:3000
+   Ele mostra uma URL https://xxxx.trycloudflare.com
+4. No Roblox Studio, ModuleScript Config, linha:
+     Config.API = "https://xxxx.trycloudflare.com"
+   Game Settings > Security > Allow HTTP Requests = ligado. Republique.
+5. No jogo, cole a chave (minha-chave-123) no painel e clique Conectar.
+6. No painel do servidor, digite o @ da live e conecte. Pode trocar o @ quando quiser.

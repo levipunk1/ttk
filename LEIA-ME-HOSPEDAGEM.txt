@@ -1,0 +1,6 @@
+Hospedagem gratis (Render). Passo a passo no chat.
+Variaveis de ambiente no Render:
+  CHAVE = uma senha forte (a mesma que voce cola no painel do jogo)
+  ALVO  = @ da live (opcional: reconecta sozinho)
+Build Command: npm install
+Start Command: node server.js
