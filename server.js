@@ -45,19 +45,36 @@ async function conectar(alvo) {
   c.on('chat', (d) => push({ type: 'COMMENT', user: quem(d), message: String(pick(d.comment, '')) }));
   c.on('follow', (d) => push({ type: 'FOLLOW', user: quem(d) }));
   c.on('like', (d) => push({ type: 'LIKE', user: quem(d), count: Number(pick(d.likeCount, d.count, 1)) }));
+  // ---- PRESENTES ----
+  // Presente em sequencia (combo) manda varios eventos e um final (repeatEnd). Se o final nunca chega
+  // (acontece), o presente era perdido. Agora: guardamos o combo e, se o final nao vier em 6s, enviamos mesmo assim.
+  const combos = new Map();
+  const positivo = (...v) => { for (const x of v) { const n = Number(x); if (Number.isFinite(n) && n > 0) return n; } return 0; };
+  const enviar = (g) => {
+    console.log('[presente] ENVIADO ' + g.user + ' | ' + g.nome + ' | ' + g.unidade + ' moedas x' + g.qtd);
+    push({ type: 'GIFT', user: g.user, gift: g.nome, diamondCount: g.unidade, amount: g.qtd, value: g.unidade * g.qtd });
+  };
   c.on('gift', (d) => {
     const det = d.giftDetails || d.gift || {};
     const ext = d.extendedGiftInfo || {};
-    const tipo = pick(d.giftType, det.giftType, ext.type);
-    const nome = String(pick(d.giftName, det.giftName, det.name, ext.name, ''));
-    const unidade = Number(pick(d.diamondCount, det.diamondCount, ext.diamond_count, 0)) || 0;
-    const qtd = Math.max(1, Number(pick(d.repeatCount, 1)) || 1);
-    const fimSeq = d.repeatEnd;
-    console.log('[presente] ' + quem(d) + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + fimSeq);
-    // presente em sequencia: so conta quando a sequencia termina
-    if (Number(tipo) === 1 && (fimSeq === false || fimSeq === 0)) return;
-    if (!nome || !unidade) { console.log('[presente] IGNORADO (sem nome ou sem moedas). Dados brutos: ' + JSON.stringify(d).slice(0, 600)); return; }
-    push({ type: 'GIFT', user: quem(d), gift: nome, diamondCount: unidade, amount: qtd, value: unidade * qtd });
+    const user = quem(d);
+    const tipo = Number(pick(d.giftType, det.giftType, ext.type));
+    const nome = String(pick(d.giftName, det.giftName, det.name, ext.name, d.giftId ? 'presente#' + d.giftId : '', ''));
+    const unidade = positivo(d.diamondCount, det.diamondCount, ext.diamond_count, ext.diamondCount);
+    const qtd = Math.max(1, Math.floor(positivo(d.repeatCount, 1)));
+    const fim = d.repeatEnd === true || Number(d.repeatEnd) === 1;
+    console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd);
+    if (!unidade) { console.log('[presente] IGNORADO (sem valor em moedas). Dados brutos: ' + JSON.stringify(d).slice(0, 800)); return; }
+
+    if (tipo !== 1) { enviar({ user, nome, unidade, qtd }); return; } // presente unico: conta na hora
+
+    const chave = user + '|' + (d.giftId || nome) + '|' + (d.groupId || '');
+    const atual = combos.get(chave);
+    if (atual) clearTimeout(atual.timer);
+    const g = { user, nome, unidade, qtd: Math.max(qtd, atual ? atual.qtd : 0) };
+    if (fim) { combos.delete(chave); enviar(g); return; }
+    g.timer = setTimeout(() => { combos.delete(chave); enviar(g); }, 6000);
+    combos.set(chave, g);
   });
   c.on('disconnected', () => { estado.conectado = false; console.log('[tiktok] desconectado'); });
   c.on('streamEnd', () => { estado.conectado = false; console.log('[tiktok] live encerrada'); });
