@@ -16,7 +16,50 @@ const MAX_EVENTOS = 1000;
 let proximoId = Date.now();
 const eventos = [];
 
+// ---- ranking: quem mais mandou moedas nesta live (alimenta o overlay /overlay) ----
+const ranking = new Map(); // @ -> { user, moedas, presentes }
+const perfis = new Map();  // @ -> { nick, avatar }
+let aoVivoEncerrou = false;
+let ultimoAlvo = '';
+
+function lembrarPerfil(d) {
+  try {
+    const u = String(d.uniqueId || (d.user && d.user.uniqueId) || '');
+    if (!u) return;
+    const du = d.user || {};
+    const nick = d.nickname || du.nickname;
+    let av = d.profilePictureUrl || du.profilePictureUrl;
+    if (!av) {
+      const pp = du.profilePicture || d.profilePicture;
+      if (typeof pp === 'string') av = pp;
+      else if (pp) av = (pp.url && pp.url[0]) || (pp.urls && pp.urls[0]) || (Array.isArray(pp) && pp[0]);
+    }
+    const p = perfis.get(u) || {};
+    if (nick) p.nick = String(nick);
+    if (av && typeof av === 'string') p.avatar = av;
+    perfis.set(u, p);
+    if (perfis.size > 5000) perfis.delete(perfis.keys().next().value);
+  } catch (_) {}
+}
+
+function somarRanking(ev) {
+  const v = Number(ev.value) || ((Number(ev.diamondCount) || 0) * (Number(ev.amount) || 1));
+  if (!(v > 0) || !ev.user) return;
+  const r = ranking.get(ev.user) || { user: ev.user, moedas: 0, presentes: 0 };
+  r.moedas += v;
+  r.presentes += Number(ev.amount) || 1;
+  ranking.set(ev.user, r);
+}
+
+function topRanking(n) {
+  return [...ranking.values()].sort((a, b) => b.moedas - a.moedas).slice(0, n).map((r, i) => {
+    const p = perfis.get(r.user) || {};
+    return { pos: i + 1, user: r.user, nick: p.nick || r.user, avatar: p.avatar || '', moedas: r.moedas, presentes: r.presentes };
+  });
+}
+
 function push(ev) {
+  if (ev.type === 'GIFT') somarRanking(ev);
   ev.id = proximoId++;
   eventos.push(ev);
   if (eventos.length > MAX_EVENTOS) eventos.shift();
@@ -43,9 +86,9 @@ async function conectar(alvo) {
   const c = new Classe(alvo, { processInitialData: true, fetchRoomInfoOnConnect: true });
   conexao = c;
 
-  c.on('chat', (d) => conexao === c && push({ type: 'COMMENT', user: quem(d), message: String(pick(d.comment, '')) }));
-  c.on('follow', (d) => conexao === c && push({ type: 'FOLLOW', user: quem(d) }));
-  c.on('like', (d) => conexao === c && push({ type: 'LIKE', user: quem(d), count: Number(pick(d.likeCount, d.count, 1)) }));
+  c.on('chat', (d) => conexao === c && (lembrarPerfil(d), 1) && push({ type: 'COMMENT', user: quem(d), message: String(pick(d.comment, '')) }));
+  c.on('follow', (d) => conexao === c && (lembrarPerfil(d), 1) && push({ type: 'FOLLOW', user: quem(d) }));
+  c.on('like', (d) => conexao === c && (lembrarPerfil(d), 1) && push({ type: 'LIKE', user: quem(d), count: Number(pick(d.likeCount, d.count, 1)) }));
   // ---- PRESENTES ----
   // Presente em sequencia (combo) manda varios eventos e um final (repeatEnd). Se o final nunca chega
   // (acontece), o presente era perdido. Agora: guardamos o combo e, se o final nao vier em 6s, enviamos mesmo assim.
@@ -63,6 +106,7 @@ async function conectar(alvo) {
   };
   c.on('gift', (d) => {
     if (conexao !== c) return; // ignora conexao antiga/duplicada
+    lembrarPerfil(d);
     // o TikTok pode entregar a mesma mensagem mais de uma vez: ignora se o id ja foi visto
     const mid = String(pick(d.msgId, d.common && d.common.msgId, ''));
     if (mid) {
@@ -115,13 +159,16 @@ async function conectar(alvo) {
     combos.set(chave, g);
   });
   c.on('disconnected', () => { estado.conectado = false; console.log('[tiktok] desconectado'); });
-  c.on('streamEnd', () => { estado.conectado = false; console.log('[tiktok] live encerrada'); });
+  c.on('streamEnd', () => { estado.conectado = false; aoVivoEncerrou = true; console.log('[tiktok] live encerrada'); });
   c.on('error', (e) => { estado.erro = String(e && e.message || e); console.log('[tiktok] erro:', estado.erro); });
 
   estado = { conectado: false, alvo, erro: '' };
   try {
     await c.connect();
     estado.conectado = true;
+    if (aoVivoEncerrou || alvo !== ultimoAlvo) { ranking.clear(); console.log('[ranking] zerado (live nova)'); }
+    aoVivoEncerrou = false;
+    ultimoAlvo = alvo;
     console.log('[tiktok] conectado em @' + alvo);
   } catch (e) {
     estado.erro = String(e && e.message || e);
@@ -152,6 +199,8 @@ const PAINEL = `<!doctype html><meta charset="utf-8"><meta name="viewport" conte
 <div class=row><input id=nome value="tester" style="max-width:140px"><input id=msg value="oi pessoal"><button onclick="sim({type:'COMMENT',message:msg.value})">Comentar</button></div>
 <div class=row><input id=gn value="Rose" style="max-width:140px"><input id=gv type=number value=1 style="max-width:90px" title="diamantes"><input id=gq type=number value=1 style="max-width:70px" title="qtd"><button onclick="sim({type:'GIFT',gift:gn.value,diamondCount:+gv.value,amount:+gq.value,value:gv.value*gq.value})">Presente</button></div>
 <button onclick="sim({type:'LIKE',count:15})">+15 likes</button><button onclick="sim({type:'FOLLOW'})">Follow</button>
+<h2>Overlay: rei da live (top 3)</h2>
+<div class=row><button onclick="window.open('/overlay?key='+encodeURIComponent(key),'_blank')">Abrir overlay</button><button class=g onclick="navigator.clipboard.writeText(location.origin+'/overlay?key='+encodeURIComponent(key));this.textContent='Link copiado!'">Copiar link</button><button class=g onclick="if(confirm('Zerar o ranking?'))post('/api/ranking/zerar')">Zerar ranking</button></div>
 <script>
 const key=new URLSearchParams(location.search).get('key')||'';
 async function post(u,b){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json','x-api-key':key},body:JSON.stringify(b||{})});return r.json()}
@@ -160,6 +209,80 @@ function sim(e){e.user=nome.value||'tester';post('/api/simular',e)}
 async function tick(){try{const r=await (await fetch('/api/estado',{headers:{'x-api-key':key}})).json();
  st.textContent=r.erro==='chave'?'Abra com ?key=SUA_CHAVE na URL':(r.conectado?'Conectado em @'+r.alvo:'Desconectado'+(r.erro?' - '+r.erro:''))+' | eventos na fila: '+r.fila}catch(e){}}
 setInterval(tick,1500);tick();
+</script>`;
+
+const OVERLAY = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rei da live</title>
+<style>
+ html,body{margin:0;background:transparent;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;overflow:hidden}
+ #box{width:340px;box-sizing:border-box;padding:14px 14px 12px;border-radius:0;color:#fff;
+   background:linear-gradient(160deg,rgba(46,18,56,.9),rgba(14,10,30,.9));border:2px solid rgba(255,210,63,.6);box-shadow:0 8px 28px rgba(0,0,0,.45)}
+ h1{margin:0 0 10px;font-size:19px;letter-spacing:.08em;text-align:center;color:#ffd23f;text-shadow:0 2px 0 rgba(0,0,0,.55)}
+ #lista{position:relative}
+ .row{position:absolute;left:0;right:0;height:54px;display:flex;align-items:center;gap:10px;padding:0 10px;box-sizing:border-box;
+   border-radius:0;background:rgba(255,255,255,.08);transition:top .6s cubic-bezier(.3,1.3,.5,1),opacity .4s}
+ .row.p1{background:linear-gradient(90deg,rgba(255,210,63,.32),rgba(255,255,255,.07));border:1px solid rgba(255,210,63,.7)}
+ .row.p2{border:1px solid rgba(217,222,232,.45)} .row.p3{border:1px solid rgba(224,160,112,.45)}
+ .pos{width:26px;text-align:center;font-size:22px}
+ .av{position:relative;width:38px;height:38px;border-radius:50%;flex:none;background:#5b3b75;display:flex;align-items:center;justify-content:center;font-weight:700;overflow:hidden;border:2px solid rgba(255,255,255,.55)}
+ .av img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+ .p1 .av{border-color:#ffd23f}
+ .nome{flex:1;min-width:0;font-weight:700;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 0 rgba(0,0,0,.5)}
+ .moedas{font-weight:800;font-size:16px;color:#ffe27a;white-space:nowrap}
+ .vazio{position:absolute;left:0;right:0;text-align:center;font-size:14px;opacity:.8;padding-top:14px}
+ .pulso{animation:pulso .8s}
+ @keyframes pulso{0%{transform:scale(1)}40%{transform:scale(1.06)}100%{transform:scale(1)}}
+</style>
+<div id="box"><h1 id="tit">\u{1F451} REI DA LIVE</h1><div id="lista"></div></div>
+<script>
+const q=new URLSearchParams(location.search);
+const key=q.get('key')||'';
+const N=Math.min(10,Math.max(1,Number(q.get('n'))||3));
+if(q.get('titulo'))document.getElementById('tit').textContent=q.get('titulo');
+const ALT=60, lista=document.getElementById('lista');
+lista.style.height=(N*ALT)+'px';
+const MEDALHA=['\u{1F451}','\u{1F948}','\u{1F949}'];
+const linhas=new Map(); let lider='';
+const fmt=n=>Number(n).toLocaleString('pt-BR');
+function criar(u){
+  const d=document.createElement('div');d.className='row';
+  d.innerHTML='<div class="pos"></div><div class="av"><span></span></div><div class="nome"></div><div class="moedas"></div>';
+  lista.appendChild(d);return d;
+}
+function atualizar(top){
+  const vistos=new Set();
+  top.forEach((r,i)=>{
+    vistos.add(r.user);
+    let d=linhas.get(r.user);
+    if(!d){d=criar(r.user);linhas.set(r.user,d);d.style.top=(i*ALT)+'px';d.style.opacity=0;requestAnimationFrame(()=>d.style.opacity=1)}
+    d.className='row p'+(i+1);
+    d.style.top=(i*ALT)+'px';
+    d.querySelector('.pos').textContent=MEDALHA[i]||(i+1);
+    d.querySelector('.nome').textContent=r.nick;
+    const m=d.querySelector('.moedas'), novo='\u{1FA99} '+fmt(r.moedas);
+    if(m.textContent!==novo){m.textContent=novo;d.classList.remove('pulso');void d.offsetWidth;d.classList.add('pulso')}
+    const av=d.querySelector('.av');
+    av.querySelector('span').textContent=(r.nick||'?').trim().charAt(0).toUpperCase();
+    if(r.avatar&&av.dataset.src!==r.avatar){
+      av.dataset.src=r.avatar;
+      const old=av.querySelector('img');if(old)old.remove();
+      const im=new Image();im.referrerPolicy='no-referrer';
+      im.onload=()=>av.appendChild(im);im.src=r.avatar;
+    }
+  });
+  for(const [u,d] of linhas){if(!vistos.has(u)){d.remove();linhas.delete(u)}}
+  let v=document.querySelector('.vazio');
+  if(!top.length){if(!v){v=document.createElement('div');v.className='vazio';v.textContent='Mande presentes pra virar o rei \u{1F451}';lista.appendChild(v)}}
+  else if(v)v.remove();
+  lider=top[0]?top[0].user:'';
+}
+async function tick(){
+  try{
+    const r=await fetch('/api/ranking?n='+N,{headers:{'x-api-key':key}});
+    if(r.ok)atualizar((await r.json()).top);
+  }catch(e){}
+}
+tick();setInterval(tick,2000);
 </script>`;
 
 function json(res, code, obj) {
@@ -176,6 +299,7 @@ function corpo(req) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/overlay') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(OVERLAY); }
   if (url.pathname === '/' ) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PAINEL); }
 
   const chave = req.headers['x-api-key'] || url.searchParams.get('key');
@@ -187,6 +311,11 @@ const server = http.createServer(async (req, res) => {
     const cursor = novos.length ? novos[novos.length - 1].id : desde;
     return json(res, 200, { cursor, eventos: novos });
   }
+  if (url.pathname === '/api/ranking' && req.method === 'GET') {
+    const n = Math.min(10, Math.max(1, Number(url.searchParams.get('n')) || 3));
+    return json(res, 200, { top: topRanking(n), participantes: ranking.size });
+  }
+  if (url.pathname === '/api/ranking/zerar' && req.method === 'POST') { ranking.clear(); return json(res, 200, { ok: true }); }
   if (url.pathname === '/api/estado') return json(res, 200, { ...estado, fila: eventos.length });
   if (url.pathname === '/api/conectar' && req.method === 'POST') {
     const b = await corpo(req);
