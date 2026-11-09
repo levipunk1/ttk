@@ -59,7 +59,7 @@ async function conectar(alvo) {
   };
   const lembrar = (chave, qtd) => {
     jaEnviado.set(chave, qtd);
-    setTimeout(() => jaEnviado.delete(chave), 120000);
+    setTimeout(() => { if (jaEnviado.get(chave) === qtd) jaEnviado.delete(chave); }, 120000);
   };
   c.on('gift', (d) => {
     if (conexao !== c) return; // ignora conexao antiga/duplicada
@@ -81,17 +81,34 @@ async function conectar(alvo) {
     console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd + ' | groupId=' + d.groupId + ' | msgId=' + mid);
     if (!unidade) { console.log('[presente] IGNORADO (sem valor em moedas). Dados brutos: ' + JSON.stringify(d).slice(0, 800)); return; }
 
-    if (tipo !== 1) { enviar({ user, nome, unidade, qtd }); return; } // presente unico: conta na hora
-
     const chave = user + '|' + (d.giftId || nome) + '|' + (d.groupId || '');
     const atual = combos.get(chave);
+    const temGrupo = !!d.groupId;
+
+    // mesma remessa que ja foi enviada (ex.: evento final chegando depois): so conta o que passar do que ja foi
+    if (!atual && temGrupo && jaEnviado.has(chave)) {
+      const feito = jaEnviado.get(chave);
+      if (qtd <= feito) { console.log('[presente] REPETIDO da mesma remessa (ignorado) ' + chave); return; }
+      jaEnviado.set(chave, qtd);
+      enviar({ user, nome, unidade, qtd: qtd - feito });
+      return;
+    }
+
+    // so manda na hora se o TikTok disse CLARAMENTE que nao e presente de combo (tipo conhecido e diferente de 1)
+    if (Number.isFinite(tipo) && tipo !== 1) {
+      enviar({ user, nome, unidade, qtd });
+      if (temGrupo) lembrar(chave, qtd);
+      return;
+    }
+
+    // combo ou tipo desconhecido: segura ate o evento final (ou 6s) e envia UMA vez so
     if (atual) clearTimeout(atual.timer);
     const g = { user, nome, unidade, qtd: Math.max(qtd, atual ? atual.qtd : 0) };
     if (fim) {
       combos.delete(chave);
       const feito = jaEnviado.get(chave) || 0;
-      if (g.qtd > feito) enviar({ ...g, qtd: g.qtd - feito }); // so manda o que faltou
-      jaEnviado.delete(chave);
+      if (g.qtd > feito) enviar({ ...g, qtd: g.qtd - feito });
+      if (temGrupo) lembrar(chave, g.qtd);
       return;
     }
     g.timer = setTimeout(() => { combos.delete(chave); enviar(g); lembrar(chave, g.qtd); }, 6000);
