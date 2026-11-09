@@ -22,24 +22,36 @@ const perfis = new Map();  // @ -> { nick, avatar }
 let aoVivoEncerrou = false;
 let ultimoAlvo = '';
 
+let depurados = 0;
 function lembrarPerfil(d) {
   try {
     const u = String(d.uniqueId || (d.user && d.user.uniqueId) || '');
     if (!u) return;
     const du = d.user || {};
     const nick = d.nickname || du.nickname;
-    let av = d.profilePictureUrl || du.profilePictureUrl;
-    if (!av) {
-      const pp = du.profilePicture || d.profilePicture;
-      if (typeof pp === 'string') av = pp;
-      else if (pp) av = (pp.url && pp.url[0]) || (pp.urls && pp.urls[0]) || (Array.isArray(pp) && pp[0]);
+    // a foto pode vir em varios formatos/lugares conforme a versao da biblioteca: junta todos os links possiveis
+    const urls = [];
+    const add = (x, prof) => {
+      if (prof > 4 || x == null) return;
+      if (typeof x === 'string') urls.push(x);
+      else if (Array.isArray(x)) x.forEach((y) => add(y, prof + 1));
+      else if (typeof x === 'object') ['url', 'urls', 'urlList', 'url_list', 'uri'].forEach((k) => add(x[k], prof + 1));
+    };
+    [d.profilePictureUrl, du.profilePictureUrl, du.profilePicture, d.profilePicture,
+     du.avatarThumb, du.avatarMedium, du.avatarLarger, d.avatarThumb, d.avatarMedium].forEach((x) => add(x, 0));
+    const ok = urls.filter((x) => /^https?:\/\//i.test(x));
+    // navegador nao abre .heic: prefere jpeg/webp/png
+    const av = ok.find((x) => !/\.heic/i.test(x)) || ok[0];
+    if (depurados < 6) {
+      depurados++;
+      console.log('[perfil] ' + u + ' | foto=' + (av ? av.slice(0, 90) + '...' : 'NENHUMA') + ' | campos do evento: ' + Object.keys(d).join(',') + ' | campos do user: ' + Object.keys(du).join(','));
     }
     const p = perfis.get(u) || {};
     if (nick) p.nick = String(nick);
-    if (av && typeof av === 'string') p.avatar = av;
+    if (av) p.avatar = av;
     perfis.set(u, p);
     if (perfis.size > 5000) perfis.delete(perfis.keys().next().value);
-  } catch (_) {}
+  } catch (e) { console.log('[perfil] erro:', e.message); }
 }
 
 function somarRanking(ev) {
