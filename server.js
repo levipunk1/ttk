@@ -22,30 +22,59 @@ const perfis = new Map();  // @ -> { nick, avatar }
 let aoVivoEncerrou = false;
 let ultimoAlvo = '';
 
-let depurados = 0;
+// ---- perfil (nome + foto) ----
+const brutos = []; // ultimos eventos "crus" (resumidos) pra diagnostico em /api/debug
+function seguro(o, prof) {
+  if (o == null) return o;
+  const t = typeof o;
+  if (t === 'string') return o.length > 110 ? o.slice(0, 110) + '...' : o;
+  if (t === 'bigint') return String(o);
+  if (t === 'function') return undefined;
+  if (t !== 'object') return o;
+  if (prof > 4) return '[...]';
+  if (Array.isArray(o)) return o.slice(0, 4).map((x) => seguro(x, prof + 1));
+  const r = {};
+  for (const k of Object.keys(o).slice(0, 40)) r[k] = seguro(o[k], prof + 1);
+  return r;
+}
+
+const ehLink = (x) => typeof x === 'string' && /^https?:\/\//i.test(x);
+const CHAVE_FOTO = /avatar|profilepic|profileimage|picture|portrait|headimg/i;
+const CHAVE_LIXO = /badge|fans|medal|honor|level|icon|border|decor|frame|sticker|gift|emote|label/i;
+
+// junta todos os links dentro de um objeto; se so_chave_foto, so segue chaves com cara de foto
+function coletar(o, prof, out, soFoto) {
+  if (o == null || prof > 7) return;
+  if (typeof o === 'string') { if (ehLink(o)) out.push(o); return; }
+  if (Array.isArray(o)) { o.forEach((y) => coletar(y, prof + 1, out, soFoto)); return; }
+  if (typeof o === 'object') {
+    for (const k of Object.keys(o)) {
+      if (CHAVE_LIXO.test(k)) continue;
+      if (soFoto && prof === 0 && !CHAVE_FOTO.test(k)) continue;
+      coletar(o[k], prof + 1, out, false);
+    }
+  }
+}
+
+function acharFoto(d) {
+  const du = d.user || d.sender || {};
+  const fotos = [];
+  coletar(du, 0, fotos, true);      // 1) campos do user com cara de foto (avatarThumb, profilePicture...)
+  coletar(d, 0, fotos, true);       // 2) campos do evento com cara de foto (profilePictureUrl...)
+  if (!fotos.length) coletar(du, 0, fotos, false); // 3) qualquer link dentro do user (sem emblemas/icones)
+  // navegador nao abre .heic: prefere jpeg/webp/png
+  return fotos.find((x) => !/\.heic/i.test(x)) || fotos[0] || '';
+}
+
 function lembrarPerfil(d) {
   try {
-    const u = String(d.uniqueId || (d.user && d.user.uniqueId) || '');
+    const u = quem(d);
     if (!u) return;
-    const du = d.user || {};
-    const nick = d.nickname || du.nickname;
-    // a foto pode vir em varios formatos/lugares conforme a versao da biblioteca: junta todos os links possiveis
-    const urls = [];
-    const add = (x, prof) => {
-      if (prof > 4 || x == null) return;
-      if (typeof x === 'string') urls.push(x);
-      else if (Array.isArray(x)) x.forEach((y) => add(y, prof + 1));
-      else if (typeof x === 'object') ['url', 'urls', 'urlList', 'url_list', 'uri'].forEach((k) => add(x[k], prof + 1));
-    };
-    [d.profilePictureUrl, du.profilePictureUrl, du.profilePicture, d.profilePicture,
-     du.avatarThumb, du.avatarMedium, du.avatarLarger, d.avatarThumb, d.avatarMedium].forEach((x) => add(x, 0));
-    const ok = urls.filter((x) => /^https?:\/\//i.test(x));
-    // navegador nao abre .heic: prefere jpeg/webp/png
-    const av = ok.find((x) => !/\.heic/i.test(x)) || ok[0];
-    if (depurados < 6) {
-      depurados++;
-      console.log('[perfil] ' + u + ' | foto=' + (av ? av.slice(0, 90) + '...' : 'NENHUMA') + ' | campos do evento: ' + Object.keys(d).join(',') + ' | campos do user: ' + Object.keys(du).join(','));
-    }
+    const du = d.user || d.sender || {};
+    const nick = pick(d.nickname, du.nickname, du.nickName, du.displayName);
+    const av = acharFoto(d);
+    brutos.unshift({ quando: new Date().toISOString(), usuario: u, foto: av || 'NENHUMA', evento: seguro(d, 0) });
+    if (brutos.length > 4) brutos.pop();
     const p = perfis.get(u) || {};
     if (nick) p.nick = String(nick);
     if (av) p.avatar = av;
@@ -274,7 +303,7 @@ function atualizar(top){
     const m=d.querySelector('.moedas'), novo='\u{1FA99} '+fmt(r.moedas);
     if(m.textContent!==novo){m.textContent=novo;d.classList.remove('pulso');void d.offsetWidth;d.classList.add('pulso')}
     const av=d.querySelector('.av');
-    av.querySelector('span').textContent=(r.nick||'?').trim().charAt(0).toUpperCase();
+    av.querySelector('span').textContent=(((r.nick||'').match(/[\\p{L}\\p{N}]/u)||['?'])[0]).toUpperCase();
     if(r.avatar&&av.dataset.src!==r.avatar){
       av.dataset.src=r.avatar;
       const old=av.querySelector('img');if(old)old.remove();
@@ -323,6 +352,7 @@ const server = http.createServer(async (req, res) => {
     const cursor = novos.length ? novos[novos.length - 1].id : desde;
     return json(res, 200, { cursor, eventos: novos });
   }
+  if (url.pathname === '/api/debug') return json(res, 200, { ultimos: brutos });
   if (url.pathname === '/api/ranking' && req.method === 'GET') {
     const n = Math.min(10, Math.max(1, Number(url.searchParams.get('n')) || 3));
     return json(res, 200, { top: topRanking(n), participantes: ranking.size });
