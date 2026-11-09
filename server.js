@@ -38,23 +38,30 @@ async function conectar(alvo) {
   if (!alvo) throw new Error('informe o @');
   if (!TikTok) throw new Error('tiktok-live-connector nao instalado');
   await desconectar();
+  eventos.length = 0; // limpa a fila: nao herda eventos de outra live
   const Classe = TikTok.TikTokLiveConnection || TikTok.WebcastPushConnection;
   const c = new Classe(alvo, { processInitialData: true, fetchRoomInfoOnConnect: true });
   conexao = c;
 
-  c.on('chat', (d) => push({ type: 'COMMENT', user: quem(d), message: String(pick(d.comment, '')) }));
-  c.on('follow', (d) => push({ type: 'FOLLOW', user: quem(d) }));
-  c.on('like', (d) => push({ type: 'LIKE', user: quem(d), count: Number(pick(d.likeCount, d.count, 1)) }));
+  c.on('chat', (d) => conexao === c && push({ type: 'COMMENT', user: quem(d), message: String(pick(d.comment, '')) }));
+  c.on('follow', (d) => conexao === c && push({ type: 'FOLLOW', user: quem(d) }));
+  c.on('like', (d) => conexao === c && push({ type: 'LIKE', user: quem(d), count: Number(pick(d.likeCount, d.count, 1)) }));
   // ---- PRESENTES ----
   // Presente em sequencia (combo) manda varios eventos e um final (repeatEnd). Se o final nunca chega
   // (acontece), o presente era perdido. Agora: guardamos o combo e, se o final nao vier em 6s, enviamos mesmo assim.
   const combos = new Map();
+  const jaEnviado = new Map(); // chave -> quantidade ja enviada (evita contar duas vezes se o final chegar atrasado)
   const positivo = (...v) => { for (const x of v) { const n = Number(x); if (Number.isFinite(n) && n > 0) return n; } return 0; };
   const enviar = (g) => {
     console.log('[presente] ENVIADO ' + g.user + ' | ' + g.nome + ' | ' + g.unidade + ' moedas x' + g.qtd);
     push({ type: 'GIFT', user: g.user, gift: g.nome, diamondCount: g.unidade, amount: g.qtd, value: g.unidade * g.qtd });
   };
+  const lembrar = (chave, qtd) => {
+    jaEnviado.set(chave, qtd);
+    setTimeout(() => jaEnviado.delete(chave), 120000);
+  };
   c.on('gift', (d) => {
+    if (conexao !== c) return; // ignora conexao antiga/duplicada
     const det = d.giftDetails || d.gift || {};
     const ext = d.extendedGiftInfo || {};
     const user = quem(d);
@@ -63,7 +70,7 @@ async function conectar(alvo) {
     const unidade = positivo(d.diamondCount, det.diamondCount, ext.diamond_count, ext.diamondCount);
     const qtd = Math.max(1, Math.floor(positivo(d.repeatCount, 1)));
     const fim = d.repeatEnd === true || Number(d.repeatEnd) === 1;
-    console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd);
+    console.log('[presente] RECEBIDO ' + user + ' | nome="' + nome + '" | moedas=' + unidade + ' | qtd=' + qtd + ' | tipo=' + tipo + ' | repeatEnd=' + d.repeatEnd + ' | groupId=' + d.groupId);
     if (!unidade) { console.log('[presente] IGNORADO (sem valor em moedas). Dados brutos: ' + JSON.stringify(d).slice(0, 800)); return; }
 
     if (tipo !== 1) { enviar({ user, nome, unidade, qtd }); return; } // presente unico: conta na hora
@@ -72,8 +79,14 @@ async function conectar(alvo) {
     const atual = combos.get(chave);
     if (atual) clearTimeout(atual.timer);
     const g = { user, nome, unidade, qtd: Math.max(qtd, atual ? atual.qtd : 0) };
-    if (fim) { combos.delete(chave); enviar(g); return; }
-    g.timer = setTimeout(() => { combos.delete(chave); enviar(g); }, 6000);
+    if (fim) {
+      combos.delete(chave);
+      const feito = jaEnviado.get(chave) || 0;
+      if (g.qtd > feito) enviar({ ...g, qtd: g.qtd - feito }); // so manda o que faltou
+      jaEnviado.delete(chave);
+      return;
+    }
+    g.timer = setTimeout(() => { combos.delete(chave); enviar(g); lembrar(chave, g.qtd); }, 6000);
     combos.set(chave, g);
   });
   c.on('disconnected', () => { estado.conectado = false; console.log('[tiktok] desconectado'); });
