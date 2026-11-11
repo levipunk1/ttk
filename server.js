@@ -25,7 +25,7 @@ let ultimoAlvo = '';
 let depurados = 0;
 function lembrarPerfil(d) {
   try {
-    const u = String(d.uniqueId || (d.user && d.user.uniqueId) || '');
+    const u = quem(d); // mesma chave do ranking (@ ou, se faltar, o apelido)
     if (!u) return;
     const du = d.user || {};
     const nick = d.nickname || du.nickname;
